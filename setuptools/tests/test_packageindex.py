@@ -1,7 +1,10 @@
 import sys
 import os
+import io
+import re
 import distutils.errors
 import platform
+import urllib.parse
 import urllib.request
 import urllib.error
 import http.client
@@ -362,6 +365,162 @@ class TestPackageIndex:
             assert fake_process.call_count(command) == 1
         assert len(fake_process.calls) == len(commands)
         assert result == dest
+
+    @pytest.mark.parametrize(
+        'name, expected',
+        [
+            ('/home/user/.ssh/authorized_keys', '_home_user_.ssh_authorized_keys'),
+            ('../../../etc/passwd', '______etc_passwd'),
+            ('..', '_'),
+            ('..\\..\\evil.txt', '____evil.txt'),
+            ('C:\\Windows\\evil.txt', 'C__Windows_evil.txt'),
+            ('D:evil.txt', 'D_evil.txt'),
+            ('D:../foo', 'D___foo'),
+            ('foo..bar-1.0.tar.gz', 'foo..bar-1.0.tar.gz'),
+            ('setuptools-68.2.2.tar.gz', 'setuptools-68.2.2.tar.gz'),
+        ],
+    )
+    def test_sanitize(self, name, expected):
+        assert setuptools.package_index.PackageIndex._sanitize(name) == expected
+
+    @pytest.mark.parametrize(
+        'url, expected_name',
+        [
+            pytest.param(
+                'https://files.example/packages/setuptools-68.2.2.tar.gz',
+                'setuptools-68.2.2.tar.gz',
+                id='plain',
+            ),
+            pytest.param(
+                'https://anyhost/%2fhome%2fuser%2f.ssh%2fauthorized_keys',
+                '_home_user_.ssh_authorized_keys',
+                id='encoded-absolute-path',
+            ),
+            pytest.param(
+                'https://anyhost/..%2f..%2f..%2fetc%2fpasswd',
+                '______etc_passwd',
+                id='encoded-parent-dirs',
+            ),
+            pytest.param(
+                'https://anyhost/%2e%2e',
+                '_',
+                id='encoded-parent-dir-only',
+            ),
+            pytest.param(
+                'https://anyhost/..%5c..%5cevil.txt',
+                '____evil.txt',
+                id='encoded-backslash-parent-dirs',
+            ),
+            pytest.param(
+                'https://anyhost/C%3a%5cWindows%5cevil.txt',
+                'C__Windows_evil.txt',
+                id='encoded-drive-absolute-path',
+            ),
+            pytest.param(
+                'https://anyhost/D%3aevil.txt',
+                'D_evil.txt',
+                id='encoded-drive-relative-path',
+            ),
+            pytest.param(
+                'https://anyhost/foo..bar-1.0.tar.gz',
+                'foo..bar-1.0.tar.gz',
+                id='embedded-dots-preserved',
+            ),
+            pytest.param(
+                'https://anyhost/foo-1.0-py3.8.egg.zip',
+                'foo-1.0-py3.8.egg',
+                id='egg-zip',
+            ),
+            pytest.param(
+                'https://anyhost/',
+                '__downloaded__',
+                id='empty-path',
+            ),
+        ],
+    )
+    def test_resolve_download_filename(self, tmp_path, url, expected_name):
+        """
+        The download target derived from the URL always lands directly
+        inside tmpdir (CVE-2025-47273).
+        """
+        resolve = setuptools.package_index.PackageIndex._resolve_download_filename
+        filename = resolve(url, tmp_path)
+        assert os.path.dirname(filename) == str(tmp_path)
+        assert os.path.basename(filename) == expected_name
+
+    def test_resolve_download_filename_outside_tmpdir(self, tmp_path, monkeypatch):
+        """
+        Should a name ever get past sanitization, a target that does not
+        resolve within tmpdir is still rejected.
+        """
+        PackageIndex = setuptools.package_index.PackageIndex
+        monkeypatch.setattr(PackageIndex, '_sanitize', staticmethod(lambda name: name))
+        tmpdir = tmp_path / 'dl'
+        victim = tmp_path / 'victim' / 'keys'
+        url = 'https://attacker.example/' + urllib.parse.quote(str(victim), safe='')
+
+        with pytest.raises(ValueError, match='Invalid filename'):
+            PackageIndex._resolve_download_filename(url, str(tmpdir))
+
+    def test_download_path_traversal(self, tmp_path, monkeypatch):
+        """
+        A URL whose last path segment decodes to an absolute path must
+        not write the download outside tmpdir (CVE-2025-47273).
+        """
+
+        class FakeResponse(io.BytesIO):
+            def info(self):
+                return http.client.HTTPMessage()
+
+        payload = b'ssh-rsa attacker-key\n'
+        monkeypatch.setattr(
+            setuptools.package_index.PackageIndex,
+            'open_url',
+            lambda self, url, warning=None: FakeResponse(payload),
+        )
+
+        tmpdir = tmp_path / 'dl'
+        tmpdir.mkdir()
+        victim_dir = tmp_path / 'victim'
+        victim_dir.mkdir()
+        victim = victim_dir / 'keys'
+        url = 'https://attacker.example/' + urllib.parse.quote(str(victim), safe='')
+
+        index = setuptools.package_index.PackageIndex()
+        result = index.download(url, str(tmpdir))
+
+        assert not victim.exists()
+        assert os.listdir(str(victim_dir)) == []
+        assert os.path.dirname(result) == str(tmpdir)
+        with open(result, 'rb') as downloaded:
+            assert downloaded.read() == payload
+
+    def test_download_vcs_path_traversal(self, tmp_path, fake_process):
+        """
+        A VCS URL whose last path segment decodes to an absolute path must
+        not clone outside tmpdir (CVE-2025-47273).
+        """
+        tmpdir = tmp_path / 'dl'
+        victim = tmp_path / 'victim'
+        clone_url = 'https://github.example/' + urllib.parse.quote(str(victim), safe='')
+        url = 'git+' + clone_url + '#egg=foo'
+
+        sanitized = re.sub(r'[:/\\]', '_', str(victim))
+        expected_dest = os.path.join(str(tmpdir), sanitized)
+        fake_process.register_subprocess([
+            'git',
+            'clone',
+            '--quiet',
+            clone_url,
+            expected_dest,
+        ])
+
+        index = setuptools.package_index.PackageIndex()
+        result = index.download(url, str(tmpdir))
+
+        assert result == expected_dest
+        assert os.path.dirname(result) == str(tmpdir)
+        assert len(fake_process.calls) == 1
 
 
 class TestContentCheckers:
