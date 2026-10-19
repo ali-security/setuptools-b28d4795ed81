@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import tempfile
+import unicodedata
 import itertools
 import io
 import logging
@@ -156,6 +157,21 @@ def test_translated_pattern_match(pattern_match):
 def test_translated_pattern_mismatch(pattern_mismatch):
     pattern, target = pattern_mismatch
     assert not translate_pattern(pattern).match(target)
+
+
+def test_translate_pattern_unicode_normalization():
+    """
+    Matching is insensitive to Unicode normalization form: a pattern authored
+    in one form matches a path stored on disk in another (and vice versa), so
+    that an exclusion cannot be bypassed by an NFC/NFD mismatch.
+
+    Regression test for GHSA-h35f-9h28-mq5c.
+    """
+    nfc = unicodedata.normalize('NFC', 'café.txt')  # 'café.txt' composed
+    nfd = unicodedata.normalize('NFD', 'café.txt')  # 'café.txt' decomposed
+    assert nfc != nfd  # the two byte forms genuinely differ
+    assert translate_pattern(nfc).match(nfd)
+    assert translate_pattern(nfd).match(nfc)
 
 
 class TempDirTestCase:
@@ -338,6 +354,91 @@ class TestManifestTest(TempDirTestCase):
         )
         files = default_files | set([ml('app/a.txt'), ml('app/b.txt'), ml('app/c.rst')])
         assert files == self.get_files()
+
+    def test_global_exclude_unicode_normalization(self):
+        """
+        A ``global-exclude`` authored NFC must drop a file whose on-disk name
+        is NFD: on macOS APFS/HFS+ the two are the same file, and even on
+        case/normalization-exact filesystems the decomposed name can be
+        committed and reach the build. Otherwise the file is published in the
+        sdist despite the exclusion.
+
+        Regression test for GHSA-h35f-9h28-mq5c.
+        """
+        nfc_name = unicodedata.normalize('NFC', 'café.txt')
+        nfd_name = unicodedata.normalize('NFD', 'café.txt')
+        assert nfc_name != nfd_name
+        # write the file under its decomposed (NFD) name ...
+        touch(os.path.join(self.temp_dir, 'app', nfd_name))
+        # ... and exclude it with the composed (NFC) form.
+        self.make_manifest(
+            f"""
+            global-include *.txt
+            global-exclude {nfc_name}
+            """
+        )
+        leaked = {
+            f
+            for f in self.get_files()
+            if unicodedata.normalize('NFC', os.path.basename(f)) == nfc_name
+        }
+        assert not leaked, f"excluded file leaked into manifest: {leaked}"
+
+    @pytest.mark.parametrize(
+        'template',
+        [
+            # exclude
+            """
+            include app/*
+            exclude app/{name}
+            """,
+            # recursive-exclude
+            """
+            global-include *.txt
+            recursive-exclude app {name}
+            """,
+        ],
+    )
+    def test_exclude_unicode_normalization(self, template):
+        """
+        ``exclude`` and ``recursive-exclude`` authored NFC must also drop a
+        file whose on-disk name is NFD (GHSA-h35f-9h28-mq5c).
+        """
+        nfc_name = unicodedata.normalize('NFC', 'café.txt')
+        nfd_name = unicodedata.normalize('NFD', 'café.txt')
+        assert nfc_name != nfd_name
+        touch(os.path.join(self.temp_dir, 'app', nfd_name))
+        self.make_manifest(template.format(name=nfc_name))
+        leaked = {
+            f
+            for f in self.get_files()
+            if unicodedata.normalize('NFC', os.path.basename(f)) == nfc_name
+        }
+        assert not leaked, f"excluded file leaked into manifest: {leaked}"
+
+    def test_prune_unicode_normalization(self):
+        """
+        ``prune`` authored NFC must drop a directory whose on-disk name is
+        NFD, along with everything inside it (GHSA-h35f-9h28-mq5c).
+        """
+        nfc_dir = unicodedata.normalize('NFC', 'café')
+        nfd_dir = unicodedata.normalize('NFD', 'café')
+        assert nfc_dir != nfd_dir
+        secret_dir = os.path.join(self.temp_dir, 'app', nfd_dir)
+        os.mkdir(secret_dir)
+        touch(os.path.join(secret_dir, 'secret.txt'))
+        self.make_manifest(
+            f"""
+            graft app
+            prune app/{nfc_dir}
+            """
+        )
+        leaked = {
+            f
+            for f in self.get_files()
+            if nfc_dir in unicodedata.normalize('NFC', f).split(os.sep)
+        }
+        assert not leaked, f"pruned directory leaked into manifest: {leaked}"
 
 
 class TestFileListTest(TempDirTestCase):
