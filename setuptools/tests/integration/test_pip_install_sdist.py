@@ -41,9 +41,12 @@ pytestmark = pytest.mark.integration
 # that `build-essential`, `gfortran` and `libopenblas-dev` are installed,
 # due to their relevance to the numerical/scientific programming ecosystem)
 EXAMPLES = [
-    ("pip", LATEST),  # just in case...
-    ("pytest", LATEST),  # uses setuptools_scm
-    ("mypy", LATEST),  # custom build_py + ext_modules
+    # pip/pytest/mypy pinned to their latest release as of setuptools 68.2.2:
+    # their current sdists use PEP 639 `project.license` strings (or build
+    # backends) that this setuptools release predates.
+    ("pip", "23.2.1"),  # just in case...
+    ("pytest", "7.4.2"),  # uses setuptools_scm
+    ("mypy", "1.5.1"),  # custom build_py + ext_modules
     # --- Popular packages: https://hugovk.github.io/top-pypi-packages/ ---
     ("botocore", LATEST),
     ("kiwisolver", LATEST),  # build_ext

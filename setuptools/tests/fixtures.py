@@ -57,6 +57,10 @@ def sample_project(tmp_path):
         subprocess.check_call(cmd, cwd=str(tmp_path))
     except Exception:
         pytest.skip("Unable to clone sampleproject")
+    # Pin to the release-era (2023-08-23) commit: HEAD now requires Python >=3.9
+    era_commit = '3fb1461c7c13b6832ed0f25625b19f2d321a74b7'
+    checkout = ['git', 'checkout', '-q', era_commit]
+    subprocess.check_call(checkout, cwd=str(tmp_path / 'sampleproject'))
     return tmp_path / 'sampleproject'
 
 

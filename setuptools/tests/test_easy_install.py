@@ -1394,6 +1394,13 @@ def test_use_correct_python_version_string(tmpdir, tmpdir_cwd, monkeypatch):
     assert cmd.config_vars['py_version_nodot'] == '310'
 
 
+@pytest.mark.skipif(
+    sys.platform == 'darwin'
+    and getattr(sys, '_framework', None)
+    and sys.version_info < (3, 10),
+    reason="framework user site (lib/python) != posix_user scheme (lib/pythonX.Y) "
+    "without sysconfig.get_preferred_scheme (Python <3.10)",
+)
 def test_editable_user_and_build_isolation(setup_context, monkeypatch, tmp_path):
     '''`setup.py develop` should honor `--user` even under build isolation'''
 

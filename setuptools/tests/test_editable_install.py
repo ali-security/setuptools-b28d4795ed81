@@ -151,6 +151,10 @@ def test_editable_with_pyproject(tmp_path, venv, files, editable_opts):
 
     (project / "src/mypkg/data.txt").write_text("foobar")
     (project / "src/mypkg/mod.py").write_text("x = 42")
+    # Bump mtime: a .pyc written in the same second (same source size)
+    # would otherwise still be considered fresh (stale-bytecode race).
+    mtime = (project / "src/mypkg/mod.py").stat().st_mtime + 2
+    os.utime(project / "src/mypkg/mod.py", (mtime, mtime))
     assert subprocess.check_output(cmd).strip() == b"3.14159.post0 foobar 42"
 
 
@@ -902,6 +906,11 @@ class TestOverallBehaviour:
         mod1.write_text("var = 17", encoding="utf-8")
         mod2.write_text("var = 781", encoding="utf-8")
         resource_file.write_text("resource 374", encoding="utf-8")
+        # Bump mtimes: a .pyc written in the same second (same source size)
+        # would otherwise still be considered fresh (stale-bytecode race).
+        for mod in (mod1, mod2):
+            mtime = mod.stat().st_mtime + 2
+            os.utime(mod, (mtime, mtime))
 
         out = venv.run(["python", "-c", dedent(cmd_get_vars)])
         assert b"42 13" not in out

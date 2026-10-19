@@ -34,12 +34,6 @@ name: Run Sage CI for Linux
 ## systems/configurations.
 
 on:
-  push:
-    tags:
-      - '*'
-  pull_request:
-    paths:
-      - .github/workflows/ci-sage.yml
   workflow_dispatch:
     # Allow to run manually
 
@@ -56,6 +50,7 @@ jobs:
 
   dist:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out ${{ env.SPKG }}
         uses: actions/checkout@v2
@@ -79,6 +74,8 @@ jobs:
           name: upstream
 
   linux:
+    # Reusable-workflow caller jobs cannot take timeout-minutes; disabled instead.
+    if: false
     # https://github.com/sagemath/sage/blob/develop/.github/workflows/docker.yml
     # Use branch of ticket https://trac.sagemath.org/ticket/33288
     uses: sagemath/sagetrac-mirror/.github/workflows/docker.yml@u/mkoeppe/setuptools_ci_target
